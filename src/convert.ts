@@ -3,14 +3,14 @@
 import fs from 'node:fs';
 import sharp from 'sharp';
 
-if (process.argv.length != 4) {
-  console.error('Usage: convert.ts sourceDir targetDir');
+if (process.argv.length < 4) {
+  console.error('Usage: convert.ts sourceDir targetDir [prefix]');
   process.exit(1);
 }
 
-main(process.argv[2], process.argv[3]);
+main(process.argv[2], process.argv[3], process.argv[4]);
 
-async function main(dir: string, target: string) {
+async function main(dir: string, target: string, prefix = '') {
   const filenames = fs.readdirSync(dir);
   await Promise.all(filenames.map(async (file) => {
     if (!file.endsWith('.svg'))
@@ -19,7 +19,7 @@ async function main(dir: string, target: string) {
     await image.flatten({background: '#FFF'})
                .greyscale()
                .png()
-               .toFile(`${target}/${file.replace(/\.svg$/, '.png')}`);
+               .toFile(`${target}/${prefix}${file.replace(/\.svg$/, '.png')}`);
   }));
 }
 
