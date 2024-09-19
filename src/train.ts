@@ -10,11 +10,11 @@ const imageShape = [ 64, 64, 1 ];
 const latentDims = 8;
 const maxFilters = 64;
 
-const epochs = 1;
+const epochs = 32;
 const batchSize = 128;
 const learningRate = 1e-3;
 
-const reportPerIter = 1;
+const reportPerIter = 10;
 
 train(process.argv[2] ?? 'assets');
 
@@ -25,10 +25,9 @@ async function train(assets: string) {
   if (files.length < batchSize)
     throw new Error('Too few images.');
 
-  // Reorder files randomly.
-  shuffle(files);
-
   const model = new VAE(latentDims, imageShape, maxFilters);
+  if (fs.existsSync('weights.safetensors'))
+    model.loadWeights('weights.safetensors');
 
   const lossAndGradFunction = nn.valueAndGrad(model, lossFunction);
   const optimizer = new optim.AdamW(learningRate);
@@ -36,10 +35,12 @@ async function train(assets: string) {
   let trainedFiles = 0;
   let losses: number[] = [];
   for (let e = 0, iterations = 0, start = Date.now(); e < epochs; ++e) {
-    for await (const batch of iterateBatches(files)) {
+    for await (const batch of iterateBatches(shuffle(files))) {
       // Use mx.tidy to free all the intermediate tensors immediately.
       mx.tidy(() => {
-        const x = mx.array(batch).reshape([ batchSize, ...imageShape ]);
+        // Reshape the images to BHWC and normalize.
+        let x = mx.array(batch).reshape([ batchSize, ...imageShape ]);
+        x = mx.divide(x, 255);
         // Compute loss and gradients, then update the model.
         const [loss, grads] = lossAndGradFunction(model, x);
         optimizer.update(model, grads);
@@ -47,29 +48,34 @@ async function train(assets: string) {
         losses.push(loss.item() as number);
         // Keep the states of model and optimizer from getting freed.
         return [model.state, optimizer.state];
-      })
+      });
       // Report updates.
       if (++iterations % reportPerIter === 0) {
         const stop = Date.now();
         const trainLoss = mean(losses);
-        const eta = ((files.length - trainedFiles - batchSize) / batchSize) * (stop - start);
+        const total = files.length * epochs;
+        const delta = reportPerIter * batchSize;
+        const eta = ((total - trainedFiles - delta) / delta) * (stop - start);
         console.log(`Iter ${iterations}`,
-                    `(${(100 * (trainedFiles + batchSize) / files.length).toFixed(1)}%):`,
+                    `(${(100 * (trainedFiles + delta) / total).toFixed(1)}%):`,
                     `Train loss ${trainLoss.toFixed(2)},`,
                     `It/sec ${(reportPerIter / (stop - start) * 1000).toFixed(2)},`,
                     `ETA ${prettyMilliseconds(eta, {compact: true})}.`);
         start = Date.now();
         losses = [];
-        trainedFiles += batchSize;
+        trainedFiles += delta;
       }
     }
   }
+
+  console.log('Saving weights...');
+  model.saveWeights('weights.safetensors');
 }
 
 function lossFunction(model: VAE, x: mx.array) {
   const [ z, mean, logvar ] = model.forward(x)
   // Reconstruction loss.
-  const loss = nn.losses.mseLoss(z, x, 'sum');
+  const loss = nn.losses.binaryCrossEntropy(z, x);
   // KL divergence between encoder distribution and standard normal.
   const klDiv = mx.multiply(-0.5,
                             mx.sum(mx.subtract(mx.subtract(mx.add(1, logvar),
@@ -90,11 +96,12 @@ async function* iterateBatches(files: string[]) {
   }
 }
 
-function shuffle(array: unknown[]) {
+function shuffle<T>(array: T[]): T[] {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [array[i], array[j]] = [array[j], array[i]];
   }
+  return array;
 }
 
 function mean(array: number[]) {
