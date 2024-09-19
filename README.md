@@ -1,3 +1,7 @@
+## Convolutional Variational Autoencoder
+
+Scripts for training a CVAE wiht MLX and Node.js.
+
 ## Readings
 
 * [An Introduction to Autoencoders](https://archive.is/tp3Jr#selection-437.0-437.31)

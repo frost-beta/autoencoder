@@ -31,17 +31,17 @@ export class VAE extends nn.Module {
 
     this.decoder = new nn.Sequential(
       (x) => x.reshape(-1, outputShape[0], outputShape[1], maxFilters),
-      new nn.ConvTranspose2d(maxFilters, maxFilters / 2, 4, 2, 1),
+      new UpsamplingConv2d(maxFilters, maxFilters / 2, 3, 1, 1),
       new nn.BatchNorm(maxFilters / 2),
       nn.leakyRelu,
-      new nn.ConvTranspose2d(maxFilters / 2, maxFilters / 4, 4, 2, 1),
+      new UpsamplingConv2d(maxFilters / 2, maxFilters / 4, 3, 1, 1),
       new nn.BatchNorm(maxFilters / 4),
       nn.leakyRelu,
-      new nn.ConvTranspose2d(maxFilters / 4, imageShape.at(-1), 4, 2, 1),
+      new UpsamplingConv2d(maxFilters / 4, imageShape.at(-1), 3, 1, 1),
       nn.sigmoid);
   }
 
-  forward(x: mx.array) {
+  override forward(x: mx.array) {
     let h = this.encoder.forward(x);
     let [ z, mu, logvar ] = this.bottleneck(h);
     z = this.fc3.forward(z);
@@ -65,4 +65,35 @@ export class VAE extends nn.Module {
     const z = mx.add(mu, mx.multiply(std, eps));
     return z;
   }
+}
+
+/**
+ * A convolutional layer that upsamples the input by a factor of 2. MLX does
+ * not yet support transposed convolutions, so we approximate them with
+ * nearest neighbor upsampling followed by a convolution. This is similar to
+ * the approach used in the original U-Net.
+ */
+class UpsamplingConv2d extends nn.Module {
+  conv: nn.Conv2d;
+
+  constructor(inChannels: number,
+              outChannels: number,
+              kernelSize: number | [number, number],
+              stride: number | [number, number],
+              padding: number | [number, number]) {
+    super();
+    this.conv = new nn.Conv2d(inChannels, outChannels, kernelSize, stride, padding);
+  }
+
+  override forward(x: mx.array): mx.array {
+    return this.conv.forward(upsampleNearest(x));
+  }
+}
+
+function upsampleNearest(x: mx.array, scale = 2) {
+  const [ B, H, W, C ] = x.shape;
+  x = mx.broadcastTo(x.index(mx.Slice(), mx.Slice(), null, mx.Slice(), null, mx.Slice()),
+                     [ B, H, scale, W, scale, C ]);
+  x = x.reshape(B, H * scale, W * scale, C);
+  return x;
 }

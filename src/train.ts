@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import util from 'node:util';
 import sharp from 'sharp';
 import prettyMilliseconds from 'pretty-ms';
 import {core as mx, optimizers as optim, nn} from '@frost-beta/mlx';
@@ -10,9 +11,9 @@ const imageShape = [ 64, 64, 1 ];
 const latentDims = 8;
 const maxFilters = 64;
 
-const epochs = 32;
+const epochs = 64;
 const batchSize = 128;
-const learningRate = 1e-3;
+const learningRate = 1e-4;
 
 const reportPerIter = 10;
 
@@ -26,8 +27,11 @@ async function train(assets: string) {
     throw new Error('Too few images.');
 
   const model = new VAE(latentDims, imageShape, maxFilters);
-  if (fs.existsSync('weights.safetensors'))
+  if (fs.existsSync('weights.safetensors')) {
+    console.log('Loading existing weights...');
     model.loadWeights('weights.safetensors');
+  }
+  mx.eval(model.parameters());
 
   const lossAndGradFunction = nn.valueAndGrad(model, lossFunction);
   const optimizer = new optim.AdamW(learningRate);
@@ -73,27 +77,28 @@ async function train(assets: string) {
 }
 
 function lossFunction(model: VAE, x: mx.array) {
-  const [ z, mean, logvar ] = model.forward(x)
+  const [ z, mu, logvar ] = model.forward(x)
   // Reconstruction loss.
-  const loss = nn.losses.binaryCrossEntropy(z, x);
+  const loss = nn.losses.mseLoss(z, x, 'sum');
   // KL divergence between encoder distribution and standard normal.
   const klDiv = mx.multiply(-0.5,
                             mx.sum(mx.subtract(mx.subtract(mx.add(1, logvar),
-                                                           mean.square()),
+                                                           mu.square()),
                                                logvar.exp())))
   return mx.add(loss, klDiv);
 }
 
 async function* iterateBatches(files: string[]) {
   // Read files into batches of bitmaps.
-  for (let i = 0; i < files.length - batchSize; i += batchSize) {
-    const data = await Promise.all(files.slice(i, i + batchSize).map(file => {
-      return sharp(file).extractChannel('red')  // greyscale image
-                        .raw()  // to bitmap
-                        .toBuffer();
-    }));
-    yield data.map(b => Array.from(b));
-  }
+  for (let i = 0; i < files.length - batchSize; i += batchSize)
+    yield await Promise.all(files.slice(i, i + batchSize).map(imageToArray));
+}
+
+async function imageToArray(file: string) {
+  const data = await sharp(file).extractChannel('red')  // greyscale image
+                                .raw()  // to bitmap
+                                .toBuffer();
+  return Array.from(data);
 }
 
 function shuffle<T>(array: T[]): T[] {
